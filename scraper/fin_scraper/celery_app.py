@@ -32,8 +32,16 @@ app.conf.update(
     },
 )
 
-# Auto-discover tasks in jobs/ directory
-app.autodiscover_tasks(["fin_scraper.jobs"])
+# Explicitly include all task modules (autodiscover only finds tasks.py by default)
+app.conf.include = [
+    "fin_scraper.jobs.price_tasks",
+    "fin_scraper.jobs.social_tasks",
+    "fin_scraper.jobs.signal_tasks",
+    "fin_scraper.jobs.onchain_tasks",
+    "fin_scraper.jobs.analysis_tasks",
+    "fin_scraper.jobs.sweep_tasks",
+    "fin_scraper.jobs.macro_tasks",
+]
 
 
 # ── Beat Schedule ────────────────────────────────────────────────────────────
