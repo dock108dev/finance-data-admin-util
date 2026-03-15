@@ -87,6 +87,8 @@ class ExchangePriceSynchronizer:
                         token=token,
                         error=str(e),
                     )
+                    # Rollback failed transaction so next token can proceed
+                    self.db.rollback()
                     results["errors"] += 1
 
             results["exchanges_synced"] = 1
@@ -152,8 +154,7 @@ class ExchangePriceSynchronizer:
                         spread = EXCLUDED.spread,
                         spread_pct = EXCLUDED.spread_pct,
                         volume_24h = EXCLUDED.volume_24h,
-                        observed_at = EXCLUDED.observed_at,
-                        updated_at = NOW()
+                        observed_at = EXCLUDED.observed_at
                 """),
                 {
                     "asset_id": asset_id,
@@ -197,8 +198,7 @@ class ExchangePriceSynchronizer:
                         bid = EXCLUDED.bid,
                         ask = EXCLUDED.ask,
                         volume_24h = EXCLUDED.volume_24h,
-                        observed_at = EXCLUDED.observed_at,
-                        updated_at = NOW()
+                        observed_at = EXCLUDED.observed_at
                 """),
                 {
                     "asset_id": asset_id,
