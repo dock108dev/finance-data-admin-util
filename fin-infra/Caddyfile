@@ -1,0 +1,37 @@
+# Fin Data Admin — Caddy reverse proxy
+# Equivalent to sports-data-admin's Caddyfile
+#
+# Routes:
+#   /api/*      → FastAPI backend (port 8000)
+#   /healthz    → FastAPI health check
+#   /v1/ws      → WebSocket endpoint
+#   /v1/sse     → Server-Sent Events endpoint
+#   /*          → Next.js frontend (port 3000)
+
+{$DOMAIN:localhost} {
+    # API routes
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+
+    # Health check
+    handle /healthz {
+        reverse_proxy api:8000
+    }
+
+    # Realtime endpoints
+    handle /v1/* {
+        reverse_proxy api:8000
+    }
+
+    # Frontend (catch-all)
+    handle {
+        reverse_proxy web:3000
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+    }
+}

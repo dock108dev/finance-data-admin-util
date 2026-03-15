@@ -1,0 +1,154 @@
+# ============================================================================
+# Fin Data Admin — Docker Compose (separate from sports-data-admin)
+# ============================================================================
+#
+# Usage:
+#   cd fin-infra
+#   docker compose --profile dev up -d --build
+#
+# Ports (offset from sports to avoid conflicts):
+#   postgres  → 5434
+#   redis     → 6381
+#   api       → 8002
+#   web       → 3002
+
+services:
+  # ── Database ─────────────────────────────────────────────────────────
+  fin-postgres:
+    image: postgres:15-alpine
+    container_name: fin-postgres
+    environment:
+      POSTGRES_DB: findata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - fin_postgres_data:/var/lib/postgresql/data
+      - ../sql/000_core_schema.sql:/docker-entrypoint-initdb.d/000_core_schema.sql
+      - ../sql/001_seed_assets.sql:/docker-entrypoint-initdb.d/001_seed_assets.sql
+      - ../sql/002_economic_indicators.sql:/docker-entrypoint-initdb.d/002_economic_indicators.sql
+      - ../sql/003_pipeline_stages.sql:/docker-entrypoint-initdb.d/003_pipeline_stages.sql
+      - ../sql/004_users.sql:/docker-entrypoint-initdb.d/004_users.sql
+      - ../sql/005_analytics.sql:/docker-entrypoint-initdb.d/005_analytics.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Message Broker ──────────────────────────────────────────────────
+  fin-redis:
+    image: redis:7-alpine
+    container_name: fin-redis
+    ports:
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── API Backend ──────────────────────────────────────────────────────
+  fin-api:
+    profiles: ["dev"]
+    container_name: fin-api
+    build:
+      context: ..
+      dockerfile: fin-infra/api.Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@fin-postgres:5432/findata
+      REDIS_URL: redis://fin-redis:6379/2
+      CELERY_BROKER_URL: redis://fin-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://fin-redis:6379/1
+      API_KEY: dev-key-do-not-use-in-production
+      JWT_SECRET: dev-jwt-secret-change-in-production
+      LOG_RELAY_URL: http://fin-log-relay:9999
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+    depends_on:
+      fin-postgres:
+        condition: service_healthy
+      fin-redis:
+        condition: service_healthy
+    volumes:
+      - ../api:/app
+    restart: unless-stopped
+
+  # ── Celery Worker ────────────────────────────────────────────────────
+  fin-scraper-worker:
+    profiles: ["dev"]
+    container_name: fin-scraper-worker
+    build:
+      context: ..
+      dockerfile: fin-infra/scraper.Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@fin-postgres:5432/findata
+      CELERY_BROKER_URL: redis://fin-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://fin-redis:6379/1
+      REDIS_URL: redis://fin-redis:6379/2
+      API_URL: http://fin-api:8000
+      API_KEY: dev-key-do-not-use-in-production
+    depends_on:
+      fin-postgres:
+        condition: service_healthy
+      fin-redis:
+        condition: service_healthy
+    volumes:
+      - ../scraper:/app
+    restart: unless-stopped
+
+  # ── Celery Beat ──────────────────────────────────────────────────────
+  fin-scraper-beat:
+    profiles: ["dev"]
+    container_name: fin-scraper-beat
+    build:
+      context: ..
+      dockerfile: fin-infra/scraper.Dockerfile
+    command: celery -A fin_scraper.celery_app beat -l info
+    environment:
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@fin-postgres:5432/findata
+      CELERY_BROKER_URL: redis://fin-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://fin-redis:6379/1
+    depends_on:
+      fin-postgres:
+        condition: service_healthy
+      fin-redis:
+        condition: service_healthy
+    volumes:
+      - ../scraper:/app
+    restart: unless-stopped
+
+  # ── Log Relay Sidecar ─────────────────────────────────────────────
+  fin-log-relay:
+    profiles: ["dev"]
+    container_name: fin-log-relay
+    build:
+      context: ./log-relay
+      dockerfile: Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  # ── Web Admin UI ────────────────────────────────────────────────────
+  fin-web:
+    profiles: ["dev"]
+    container_name: fin-web
+    build:
+      context: ..
+      dockerfile: fin-infra/web.Dockerfile
+      args:
+        API_URL: http://fin-api:8000
+    ports:
+      - "3002:3000"
+    environment:
+      API_URL: http://fin-api:8000
+      API_KEY: dev-key-do-not-use-in-production
+    depends_on:
+      - fin-api
+    restart: unless-stopped
+
+volumes:
+  fin_postgres_data:

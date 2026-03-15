@@ -1,0 +1,251 @@
+version: "3.9"
+
+# ============================================================================
+# Fin Data Admin — Docker Compose
+# ============================================================================
+# Equivalent to sports-data-admin's docker-compose.yml
+#
+# Usage (dev — local build):
+#   docker compose --profile dev up -d --build
+#   docker compose exec api alembic upgrade head
+#
+# Usage (prod — pre-built GHCR images):
+#   docker compose --profile prod up -d
+#   docker compose run --rm migrate
+#
+# Services:
+#   postgres       — PostgreSQL 15 database
+#   redis          — Redis 7 (Celery broker + cache)
+#   api            — FastAPI backend (port 8000)
+#   scraper-worker — Celery worker (task execution)
+#   scraper-beat   — Celery beat (scheduled task dispatch)
+#   web            — Next.js admin dashboard (port 3000)
+#   migrate        — One-shot Alembic migration runner
+
+services:
+  # ── Database ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: findata
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../sql/000_core_schema.sql:/docker-entrypoint-initdb.d/000_core_schema.sql
+      - ../sql/001_seed_assets.sql:/docker-entrypoint-initdb.d/001_seed_assets.sql
+      - ../sql/002_economic_indicators.sql:/docker-entrypoint-initdb.d/002_economic_indicators.sql
+      - ../sql/003_pipeline_stages.sql:/docker-entrypoint-initdb.d/003_pipeline_stages.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Message Broker ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── API Backend ──────────────────────────────────────────────────────
+  api:
+    profiles: ["dev"]
+    build:
+      context: ..
+      dockerfile: infra/api.Dockerfile
+    ports:
+      - "${API_PORT:-8001}:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/findata
+      REDIS_URL: redis://redis:6379/2
+      API_KEY: dev-key-do-not-use-in-production
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../api:/app
+    restart: unless-stopped
+
+  # ── Celery Worker ────────────────────────────────────────────────────
+  scraper-worker:
+    profiles: ["dev"]
+    build:
+      context: ..
+      dockerfile: infra/scraper.Dockerfile
+    environment:
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/findata
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/2
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      COINGECKO_API_KEY: ${COINGECKO_API_KEY:-}
+      COINMARKETCAP_API_KEY: ${COINMARKETCAP_API_KEY:-}
+      ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDDIT_USER_AGENT: ${REDDIT_USER_AGENT:-fin-data-admin/1.0}
+      X_AUTH_TOKEN: ${X_AUTH_TOKEN:-}
+      X_CT0: ${X_CT0:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../scraper:/app
+    restart: unless-stopped
+
+  # ── Celery Beat ──────────────────────────────────────────────────────
+  scraper-beat:
+    profiles: ["dev"]
+    build:
+      context: ..
+      dockerfile: infra/scraper.Dockerfile
+    command: celery -A fin_scraper.celery_app beat -l info
+    environment:
+      DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/findata
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../scraper:/app
+    restart: unless-stopped
+
+  # ── Web Admin UI ────────────────────────────────────────────────────
+  web:
+    profiles: ["dev"]
+    build:
+      context: ..
+      dockerfile: infra/web.Dockerfile
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    environment:
+      API_URL: http://api:8000
+      API_KEY: dev-key-do-not-use-in-production
+    depends_on:
+      - api
+    volumes:
+      - ../web:/app
+      - /app/node_modules
+      - /app/.next
+    restart: unless-stopped
+
+  # ── Production API (pre-built image) ────────────────────────────────
+  api-prod:
+    profiles: ["prod"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-fin-data-admin}-api:${IMAGE_TAG:-latest}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      API_KEY: ${API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ENVIRONMENT: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Production Celery Worker ───────────────────────────────────────
+  scraper-worker-prod:
+    profiles: ["prod"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-fin-data-admin}-scraper:${IMAGE_TAG:-latest}
+    env_file: .env
+    environment:
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      API_URL: http://api-prod:8000
+      API_KEY: ${API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Production Celery Beat ────────────────────────────────────────
+  scraper-beat-prod:
+    profiles: ["prod"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-fin-data-admin}-scraper:${IMAGE_TAG:-latest}
+    command: celery -A fin_scraper.celery_app beat -l info
+    env_file: .env
+    environment:
+      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Production Web UI ─────────────────────────────────────────────
+  web-prod:
+    profiles: ["prod"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-fin-data-admin}-web:${IMAGE_TAG:-latest}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      API_URL: http://api-prod:8000
+      API_KEY: ${API_KEY}
+    depends_on:
+      - api-prod
+    restart: unless-stopped
+
+  # ── Caddy Reverse Proxy (prod) ─────────────────────────────────
+  caddy:
+    profiles: ["prod"]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    depends_on:
+      - api-prod
+      - web-prod
+    restart: unless-stopped
+
+  # ── Migration Runner (one-shot) ───────────────────────────────────
+  migrate:
+    profiles: ["prod"]
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:-fin-data-admin}-api:${IMAGE_TAG:-latest}
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,95 @@
+# Architecture
+
+## System Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Web Admin UI                              │
+│                     (Next.js / React / TS)                       │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌───────────────┐  │
+│  │ Market    │  │  Signal   │  │ Control  │  │  Portfolio     │  │
+│  │ Browser   │  │  Viewer   │  │  Panel   │  │  Tracker      │  │
+│  └──────────┘  └───────────┘  └──────────┘  └───────────────┘  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ HTTP (port 3000 → 8000)
+┌──────────────────────────▼───────────────────────────────────────┐
+│                       FastAPI Backend                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────┐ │
+│  │ /api/markets │  │ /api/signals│  │ /api/admin               │ │
+│  │ assets,      │  │ alpha,      │  │ tasks, pipeline, runs    │ │
+│  │ sessions,    │  │ arbitrage,  │  │                          │ │
+│  │ candles      │  │ sentiment   │  │                          │ │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────────┘ │
+│         │                │                     │                 │
+│  ┌──────▼────────────────▼─────────────────────▼───────────────┐ │
+│  │              SQLAlchemy ORM (async)                          │ │
+│  └──────────────────────┬──────────────────────────────────────┘ │
+└─────────────────────────┼────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────────┐
+│                    PostgreSQL 15+                                  │
+│  fin_asset_classes │ fin_assets │ fin_sessions │ fin_candles      │
+│  fin_exchange_prices │ fin_arbitrage_work │ fin_alpha_signals     │
+│  fin_social_posts │ fin_sentiment_snapshots │ fin_news_articles   │
+│  fin_whale_wallets │ fin_whale_transactions │ fin_onchain_metrics │
+│  fin_market_analyses │ fin_session_timelines                     │
+│  fin_scrape_runs │ fin_job_runs │ fin_data_conflicts             │
+└──────────────────────────────────────────────────────────────────┘
+                          ▲
+┌─────────────────────────┼────────────────────────────────────────┐
+│                   Celery Workers                                  │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────────┐ │
+│  │  Price     │  │  Social   │  │  Signal   │  │  On-Chain     │ │
+│  │  Tasks     │  │  Tasks    │  │  Tasks    │  │  Tasks        │ │
+│  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  └──────┬────────┘ │
+│        │              │              │               │           │
+│  ┌─────▼──────────────▼──────────────▼───────────────▼─────────┐ │
+│  │                   Redis (Broker)                             │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+         │              │              │               │
+    ┌────▼────┐   ┌────▼────┐   ┌────▼────┐    ┌────▼────┐
+    │ Yahoo   │   │ Twitter │   │ Binance │    │Etherscan│
+    │ Finance │   │ Reddit  │   │Coinbase │    │DeFiLlama│
+    │ Polygon │   │ NewsAPI │   │ Kraken  │    │         │
+    └─────────┘   └─────────┘   └─────────┘    └─────────┘
+```
+
+## Data Flow
+
+### Price Ingestion (equiv. Sports Ingestion)
+```
+External APIs → Scraper (normalize) → fin_candles + fin_sessions
+```
+
+### Exchange Sync (equiv. Odds Sync)
+```
+Exchange APIs → Synchronizer → fin_exchange_prices + fin_arbitrage_work
+```
+
+### Signal Pipeline (equiv. EV Computation)
+```
+fin_candles + fin_exchange_prices + fin_sentiment → Signal Detector → fin_alpha_signals
+```
+
+### Analysis Generation (equiv. Game Flow)
+```
+fin_candles + fin_social_posts + fin_alpha_signals → Pipeline Orchestrator → fin_market_analyses
+```
+
+## Database Schema
+
+See `sql/000_core_schema.sql` for the complete schema definition.
+
+### Entity Relationships
+
+```
+fin_asset_classes ──< fin_assets ──< fin_sessions ──< fin_candles
+                                  ├──< fin_session_summaries
+                                  ├──< fin_exchange_prices
+                                  ├──< fin_alpha_signals
+                                  ├──< fin_social_posts
+                                  ├──< fin_asset_fundamentals
+                                  ├──< fin_whale_transactions
+                                  └──< fin_onchain_metrics
+```
