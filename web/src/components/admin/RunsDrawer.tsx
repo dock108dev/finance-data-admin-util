@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import styles from "./RunsDrawer.module.css";
-import { api, type JobRun } from "@/lib/api";
+import { api, type ScrapeRun } from "@/lib/api";
 
 type DrawerSize = "collapsed" | "half" | "full";
 
@@ -21,9 +21,9 @@ const PHASE_OPTIONS = [
 
 const STATUS_OPTIONS = [
   { value: "", label: "All statuses" },
-  { value: "success", label: "Success" },
+  { value: "completed", label: "Completed" },
   { value: "running", label: "Running" },
-  { value: "error", label: "Error" },
+  { value: "failed", label: "Failed" },
 ];
 
 const AUTO_REFRESH_MS = 30_000;
@@ -60,7 +60,7 @@ const SIZE_CLASS: Record<DrawerSize, string> = {
 
 export function RunsDrawer() {
   const [size, setSize] = useState<DrawerSize>("collapsed");
-  const [runs, setRuns] = useState<JobRun[]>([]);
+  const [runs, setRuns] = useState<ScrapeRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState("");
@@ -70,8 +70,8 @@ export function RunsDrawer() {
   const fetchRuns = useCallback(async () => {
     try {
       setError(null);
-      const data = await api.listJobRuns({
-        phase: phase || undefined,
+      const data = await api.listRuns({
+        scraper_type: phase || undefined,
         status: status || undefined,
         limit: 100,
       });
@@ -104,11 +104,11 @@ export function RunsDrawer() {
 
   const getStatusClass = (s: string) => {
     switch (s) {
-      case "success":
+      case "completed":
         return styles.statusSuccess;
       case "running":
         return styles.statusRunning;
-      case "error":
+      case "failed":
         return styles.statusError;
       default:
         return "";
@@ -192,12 +192,12 @@ export function RunsDrawer() {
               <table className={styles.table}>
                 <thead>
                   <tr>
-                    <th>Phase</th>
-                    <th>Asset Classes</th>
+                    <th>Task</th>
                     <th>Status</th>
                     <th>Started</th>
-                    <th>Duration</th>
-                    <th>Summary</th>
+                    <th>Finished</th>
+                    <th>Processed</th>
+                    <th>Details</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -206,10 +206,10 @@ export function RunsDrawer() {
                       <tr
                         key={run.id}
                         className={
-                          run.summary_data ? styles.expandable : undefined
+                          run.error_details ? styles.expandable : undefined
                         }
                         onClick={() => {
-                          if (run.summary_data) {
+                          if (run.error_details) {
                             setExpandedId(
                               expandedId === run.id ? null : run.id
                             );
@@ -218,15 +218,8 @@ export function RunsDrawer() {
                       >
                         <td>
                           <span className={styles.phaseBadge}>
-                            {run.phase}
+                            {run.scraper_type}
                           </span>
-                        </td>
-                        <td>
-                          {(run.asset_classes ?? []).map((ac) => (
-                            <span key={ac} className={styles.assetClassBadge}>
-                              {ac}
-                            </span>
-                          ))}
                         </td>
                         <td>
                           <span
@@ -240,25 +233,30 @@ export function RunsDrawer() {
                             ? `${formatDate(run.started_at)} ${formatTime(run.started_at)}`
                             : "-"}
                         </td>
-                        <td className={styles.durationCell}>
-                          {formatDuration(run.duration_seconds)}
+                        <td>
+                          {run.finished_at
+                            ? formatTime(run.finished_at)
+                            : "-"}
                         </td>
                         <td>
-                          {run.error_summary
-                            ? run.error_summary.slice(0, 60)
-                            : run.summary_data
-                              ? "Click to expand"
-                              : "-"}
+                          {run.assets_processed != null
+                            ? `${run.assets_processed} assets, ${run.records_created ?? 0} records`
+                            : "-"}
+                        </td>
+                        <td>
+                          {run.error_details
+                            ? run.error_details.slice(0, 60)
+                            : "-"}
                         </td>
                       </tr>
-                      {expandedId === run.id && run.summary_data && (
+                      {expandedId === run.id && run.error_details && (
                         <tr
                           key={`${run.id}-detail`}
                           className={styles.summaryRow}
                         >
                           <td colSpan={6}>
                             <pre className={styles.summaryPre}>
-                              {JSON.stringify(run.summary_data, null, 2)}
+                              {run.error_details}
                             </pre>
                           </td>
                         </tr>
